@@ -34,6 +34,7 @@ main { flex: 1; display: flex; flex-direction: column; gap: var(--gap); padding:
 .frame { position: absolute; inset: 15% 25%; border: 3px solid rgba(255, 255, 255, 0.85); border-radius: 12px; box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.25); }
 .torch { position: absolute; right: 8px; bottom: 8px; background: rgba(0, 0, 0, 0.6); }
 .camera-note { position: absolute; inset: 0; margin: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: #fff; background: #1b1b1b; }
+.camera-note[hidden] { display: none; }
 
 .result { border-radius: var(--radius); padding: 16px; min-height: 132px; }
 .result p { margin: 0; }
