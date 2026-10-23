@@ -13,13 +13,20 @@
     guests: store.get('guests', {}), title: store.get('title', ''), queue: store.get('queue', []), lastRead: {}, detector: null, busy: false };
 
   // The staff link is <page>#api=<web app URL>&key=<staff key>. The phone keeps both, and the key leaves the address bar,
-  // so it is not on screen while the phone is passed around.
-  const link = new URLSearchParams(location.hash.slice(1));
-  if (link.get('api') && link.get('key')) {
-    if (link.get('api') !== S.api || link.get('key') !== S.key) { S.guests = {}; store.drop('guests'); }
-    S.api = link.get('api'); S.key = link.get('key');
-    store.set('api', S.api); store.set('key', S.key);
-    history.replaceState(null, '', location.pathname + location.search);
+  // so it is not on screen while the phone is passed around. Only a Google Apps Script web app address is accepted, so a
+  // forged link cannot send scans (or a walk-in's name and email) anywhere else; a phone already set up for another address
+  // asks before switching, and scans waiting on the phone are only ever sent to the address they were made for.
+  const API_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/, KEY_RE = /^[0-9a-f]{32}$/;
+  const link = new URLSearchParams(location.hash.slice(1)), newApi = link.get('api') || '', newKey = link.get('key') || '';
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  if (newApi || newKey) {
+    if (!API_RE.test(newApi) || !KEY_RE.test(newKey)) S.badLink = true;
+    else if (!S.api || newApi === S.api) { if (newKey !== S.key) adopt(newApi, newKey); }
+    else S.switchTo = { api: newApi, key: newKey };                   // another workshop: confirm first (see start)
+  }
+  function adopt(api, key) {
+    if (api !== S.api) { S.guests = {}; store.drop('guests'); S.title = ''; store.drop('title'); }
+    S.api = api; S.key = key; store.set('api', api); store.set('key', key);
   }
 
   // ---- pass codes: the same rule as normalizeCode in apps-script/Logic.gs (O reads as 0, I and L as 1)
@@ -70,9 +77,11 @@
   document.addEventListener('pointerdown', () => { try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch (e) { /* no sound */ } }, { once: true });
   function counts(c) { if (!c) return; $('c-inside').textContent = c.inside; $('c-in').textContent = c.checkedIn; $('c-cert').textContent = c.certificates; }
   function block(title, text) { $('blocker-title').textContent = title; $('blocker-text').textContent = text; $('blocker').hidden = false; }
+  const mine = () => S.queue.filter(x => x.api === S.api);
   function syncLine() {
-    const n = S.queue.length;
-    $('sync').textContent = n ? n + (n === 1 ? ' scan' : ' scans') + ' waiting to send' : (navigator.onLine ? 'All scans sent' : 'Offline');
+    const n = mine().length, held = S.queue.length - n;
+    $('sync').textContent = (n ? n + (n === 1 ? ' scan' : ' scans') + ' waiting to send' : (navigator.onLine ? 'All scans sent' : 'Offline')) +
+      (held ? '. ' + held + ' held for an earlier workshop link' : '');
   }
 
   // ---- talking to the web app (JSON sent as text/plain, so no preflight; Apps Script answers through a redirect)
@@ -81,7 +90,7 @@
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
   }
-  function queueItem(item) { S.queue.push(item); store.set('queue', S.queue); syncLine(); }
+  function queueItem(item) { S.queue.push(Object.assign({ api: S.api }, item)); store.set('queue', S.queue); syncLine(); }
   async function send(item, name) {
     show('pending', name || 'Checking the pass', 'Sending to the Sheet.');
     let res;
@@ -125,13 +134,15 @@
     beep('error');
   }
   async function flush() {
-    if (!S.queue.length || S.flushing) return;
+    if (!mine().length || S.flushing) return;
     S.flushing = true;
     try {
-      while (S.queue.length) {
+      for (let next = mine()[0]; next; next = mine()[0]) {
+        const body = Object.assign({}, next);
+        delete body.api;
         let res;
-        try { res = await post(S.queue[0]); } catch (e) { break; }             // still offline: try again later
-        S.queue.shift(); store.set('queue', S.queue);
+        try { res = await post(body); } catch (e) { break; }                     // still offline: try again later
+        S.queue.splice(S.queue.indexOf(next), 1); store.set('queue', S.queue);
         if (res && res.counts) counts(res.counts);
         if (res && !res.ok && (res.error === 'key' || res.error === 'closed')) { problem(res); break; }
       }
@@ -280,7 +291,18 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { wake(); flush(); } });
 
   function start() {
+    if (S.badLink) return block('This is not a valid scanner link', 'Open the scanner from the QR code the organiser shows in the Sheet, under Workshop > Open scanner.');
+    if (S.switchTo) {
+      $('switch-text').textContent = 'This phone is set up for another workshop link. Use the new link? ' +
+        (S.queue.length ? 'Scans still waiting for the current link stay on this phone and are not sent to the new one.' : '');
+      $('switch').showModal();
+      $('switch-yes').onclick = () => { adopt(S.switchTo.api, S.switchTo.key); S.switchTo = null; $('switch').close(); start(); };
+      $('switch-no').onclick = () => { S.switchTo = null; $('switch').close(); start(); };
+      return;
+    }
     if (!S.api || !S.key) return block('Open the scanner from the staff link', 'The organiser shows it as a QR code in the Sheet, under Workshop > Open scanner.');
+    if (S.started) return;
+    S.started = true;
     $('title').textContent = S.title || 'Workshop scanner';
     $('phone-label').textContent = S.phone ? 'This phone: ' + S.phone : '';
     if (!S.phone) $('name-phone').showModal();
