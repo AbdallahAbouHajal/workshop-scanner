@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<meta name="robots" content="noindex">
+<title>Workshop scanner</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<!-- Door scanner for workshop passes. It talks only to the Apps Script web app named in the staff link
+     (#api=...&key=...); the page itself holds no attendee data. Source: AAU Workshop Attendance/scanner. -->
+<header class="top">
+  <h1 class="title" id="title">Workshop scanner</h1>
+  <dl class="counts">
+    <div><dt>Inside</dt><dd id="c-inside">0</dd></div>
+    <div><dt>Checked in</dt><dd id="c-in">0</dd></div>
+    <div><dt>Certificates</dt><dd id="c-cert">0</dd></div>
+  </dl>
+</header>
+
+<main>
+  <div class="modes" role="radiogroup" aria-label="What a scan records on this phone">
+    <button type="button" role="radio" data-mode="ENTRY" aria-checked="true">Entry</button>
+    <button type="button" role="radio" data-mode="EXIT" aria-checked="false">Exit</button>
+    <button type="button" role="radio" data-mode="SWEEP" aria-checked="false">Seat check</button>
+  </div>
+
+  <section class="camera" aria-label="Camera">
+    <video id="video" playsinline muted></video>
+    <div class="frame" aria-hidden="true"></div>
+    <button type="button" class="torch" id="torch" hidden>Torch</button>
+    <p class="camera-note" id="camera-note" hidden></p>
+  </section>
+
+  <section class="result idle" id="result" aria-live="assertive" aria-atomic="true">
+    <p class="r-name" id="r-name">Point the camera at a pass</p>
+    <p class="r-line" id="r-line">Entry mode: a scan checks the person in.</p>
+    <div class="r-actions" id="r-actions"></div>
+  </section>
+
+  <div class="actions">
+    <button type="button" id="next-exit" aria-pressed="false">Next scan: Exit</button>
+    <button type="button" id="open-find">Find a name</button>
+    <button type="button" id="open-walkin">Add walk-in</button>
+  </div>
+</main>
+
+<footer class="status">
+  <span id="phone-label"></span>
+  <span id="sync" role="status"></span>
+</footer>
+
+<dialog id="find" aria-labelledby="find-title">
+  <form method="dialog" class="sheet">
+    <h2 id="find-title">Find a name</h2>
+    <label for="find-q">Name</label>
+    <input id="find-q" type="search" autocomplete="off" placeholder="For example Sara">
+    <ul id="find-list" class="find-list"></ul>
+    <button type="submit" class="secondary">Close</button>
+  </form>
+</dialog>
+
+<dialog id="walkin" aria-labelledby="walkin-title">
+  <form id="walkin-form" class="sheet">
+    <h2 id="walkin-title">Add a walk-in</h2>
+    <p class="hint">They are checked in now and get their pass by email for the exit scan.</p>
+    <label for="w-name">Full name, as it should appear on the certificate</label>
+    <input id="w-name" required minlength="3" maxlength="60" autocomplete="off">
+    <label for="w-email">Email</label>
+    <input id="w-email" type="email" required autocomplete="off" inputmode="email">
+    <p class="form-error" id="w-error" hidden></p>
+    <div class="row">
+      <button type="submit">Check in</button>
+      <button type="button" class="secondary" id="w-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="name-phone" aria-labelledby="phone-title">
+  <form id="phone-form" class="sheet">
+    <h2 id="phone-title">Name this phone</h2>
+    <p class="hint">The name shows in the scan log, so the organiser can tell the doors apart.</p>
+    <label for="phone-name">Phone name</label>
+    <input id="phone-name" required maxlength="30" value="Door 1">
+    <button type="submit">Save</button>
+  </form>
+</dialog>
+
+<div class="blocker" id="blocker" hidden>
+  <h2 id="blocker-title"></h2>
+  <p id="blocker-text"></p>
+</div>
+
+<script src="vendor/barcode-detector-3.2.3.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
