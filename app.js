@@ -112,7 +112,7 @@
       case 'IN': show('in', who, 'Checked in at ' + hm(item.at) + '.'); beep('in'); break;
       case 'ALREADY_IN': show('pending', who, 'Already inside' + (since ? ' since ' + since : '') + '. Nothing changed.'); beep('warn'); break;
       case 'OUT':
-        show('out', who, res.minutes + ' minutes counted. ' + (res.status === 'ELIGIBLE' ? 'The certificate is on its way by email.'
+        show('out', who, res.minutes + (res.minutes === 1 ? ' minute' : ' minutes') + ' counted. ' + (res.status === 'ELIGIBLE' ? 'The certificate is on its way by email.'
           : res.status === 'BORDERLINE' ? 'Borderline: the organiser decides.' : 'Under the minimum, so no certificate.'));
         beep('out'); break;
       case 'EXIT_TOO_SOON': show('warn', who, 'Checked in at ' + since + '. Check them out already?', [['Yes, check out', again({ confirmed: true })]]); beep('warn'); break;
