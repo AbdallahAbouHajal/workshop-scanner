@@ -1,5 +1,5 @@
 // Keeps the scanner page on the phone so it opens without Wi-Fi. Calls to the web app (another origin) are never cached.
-const CACHE = 'scanner-v1';
+const CACHE = 'scanner-v2';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'vendor/barcode-detector-3.2.3.js',
   'vendor/zxing_reader.wasm', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });

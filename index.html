@@ -15,7 +15,13 @@
 <!-- Door scanner for workshop passes. It talks only to the Apps Script web app named in the staff link
      (#api=...&key=...); the page itself holds no attendee data. Source: AAU Workshop Attendance/scanner. -->
 <header class="top">
-  <h1 class="title" id="title">Workshop scanner</h1>
+  <div class="top-row">
+    <div class="top-text">
+      <h1 class="title" id="title">Workshop scanner</h1>
+      <p class="when" id="when"></p>
+    </div>
+    <button type="button" class="change" id="change-ws">Change workshop</button>
+  </div>
   <dl class="counts">
     <div><dt>Inside</dt><dd id="c-inside">0</dd></div>
     <div><dt>Checked in</dt><dd id="c-in">0</dd></div>
@@ -89,6 +95,15 @@
     <input id="phone-name" required maxlength="30" value="Door 1">
     <button type="submit">Save</button>
   </form>
+</dialog>
+
+<dialog id="pick" aria-labelledby="pick-title">
+  <div class="sheet">
+    <h2 id="pick-title">Which workshop is this phone scanning for?</h2>
+    <p class="hint" id="pick-note" hidden></p>
+    <ul id="pick-list" class="pick-list"></ul>
+    <button type="button" class="secondary" id="pick-cancel" hidden>Keep the current workshop</button>
+  </div>
 </dialog>
 
 <dialog id="switch" aria-labelledby="switch-title">

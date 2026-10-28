@@ -1,6 +1,8 @@
 // Workshop scanner. Reads passes with the phone camera (or a USB scanner gun) and reports each scan to the Apps Script web
 // app named in the staff link. A scan made without a connection is kept on the phone with its scan time and sent when the
 // connection returns. The other side is doPost in apps-script/Code.gs. Built 23 Oct 2026.
+// One Sheet can run several workshops (28 Oct 2026): the phone asks which workshop it is scanning for, and every scan, walk-in
+// and search carries that workshop's key. A pass for another workshop is shown as such and not counted.
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -10,23 +12,36 @@
     drop(k) { try { localStorage.removeItem('ws.' + k); } catch (e) { /* nothing saved */ } }
   };
   const S = { api: store.get('api', ''), key: store.get('key', ''), phone: store.get('phone', ''), mode: 'ENTRY', once: false,
-    guests: store.get('guests', {}), title: store.get('title', ''), queue: store.get('queue', []), lastRead: {}, detector: null, busy: false };
+    workshop: store.get('workshop', ''), workshops: store.get('workshops', []), guests: store.get('guests', {}), title: store.get('title', ''),
+    when: store.get('when', ''), queue: store.get('queue', []), lastRead: {}, detector: null, busy: false };
 
   // The staff link is <page>#api=<web app URL>&key=<staff key>. The phone keeps both, and the key leaves the address bar,
   // so it is not on screen while the phone is passed around. Only a Google Apps Script web app address is accepted, so a
   // forged link cannot send scans (or a walk-in's name and email) anywhere else; a phone already set up for another address
   // asks before switching, and scans waiting on the phone are only ever sent to the address they were made for.
-  const API_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/, KEY_RE = /^[0-9a-f]{32}$/;
-  const link = new URLSearchParams(location.hash.slice(1)), newApi = link.get('api') || '', newKey = link.get('key') || '';
+  // The link may also name one workshop (&w=W03), which the phone then opens straight away.
+  const API_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/, KEY_RE = /^[0-9a-f]{32}$/, WS_RE = /^[A-Za-z0-9]{1,12}$/;
+  const link = new URLSearchParams(location.hash.slice(1)), newApi = link.get('api') || '', newKey = link.get('key') || '', newWs = link.get('w') || '';
   if (location.hash) history.replaceState(null, '', location.pathname + location.search);
   if (newApi || newKey) {
     if (!API_RE.test(newApi) || !KEY_RE.test(newKey)) S.badLink = true;
     else if (!S.api || newApi === S.api) { if (newKey !== S.key) adopt(newApi, newKey); }
-    else S.switchTo = { api: newApi, key: newKey };                   // another workshop: confirm first (see start)
+    else S.switchTo = { api: newApi, key: newKey };                   // another Sheet: confirm first (see start)
   }
+  if (!S.badLink && WS_RE.test(newWs) && (!S.switchTo || newApi === S.api)) setWorkshop(newWs);
   function adopt(api, key) {
-    if (api !== S.api) { S.guests = {}; store.drop('guests'); S.title = ''; store.drop('title'); }
+    if (api !== S.api) { setWorkshop(''); S.workshops = []; store.drop('workshops'); }
     S.api = api; S.key = key; store.set('api', api); store.set('key', key);
+  }
+  // A new workshop starts with an empty guest list, filled by the next hello.
+  function setWorkshop(key) {
+    if (key === S.workshop) return;
+    S.workshop = key; S.guests = {}; S.title = ''; S.when = '';
+    store.set('workshop', key); ['guests', 'title', 'when'].forEach(k => store.drop(k));
+  }
+  function showTitle() {
+    $('title').textContent = S.title || (S.workshop ? 'Workshop ' + S.workshop : 'Workshop scanner');
+    $('when').textContent = S.when;
   }
 
   // ---- pass codes: the same rule as normalizeCode in apps-script/Logic.gs (O reads as 0, I and L as 1)
@@ -119,8 +134,11 @@
       case 'NOT_IN': show('warn', who, 'Not checked in, so there is nothing to check out.', [['Check in now', again({ mode: 'ENTRY' })]]); beep('warn'); break;
       case 'SEEN': show('in', who, 'Seen at the seat check.'); beep('in'); break;
       case 'SEEN_NOT_IN': show('warn', who, 'Seen at a seat, but never checked in at the door.', [['Check in now', again({ mode: 'ENTRY' })]]); beep('warn'); break;
+      case 'OTHER_WORKSHOP':
+        show('warn', who, 'This pass is for ' + res.other.title + ', ' + res.other.day + ' at ' + res.other.start + '. Not counted here.');
+        beep('warn'); break;
       case 'REPEAT': break;
-      case 'UNKNOWN': show('error', 'Pass not found', 'This code is not registered for this workshop.'); beep('error'); break;
+      case 'UNKNOWN': show('error', 'Pass not found', 'This code is not registered for any workshop.'); beep('error'); break;
       default: show('pending', who, 'Saved.');
     }
   }
@@ -128,8 +146,9 @@
     if (res.error === 'key') return block('This scanner link no longer works', 'Ask the organiser for the new link. It is in the Sheet under Workshop > Open scanner.');
     if (res.error === 'closed') {
       S.guests = {}; store.drop('guests');
-      return block('The workshop is closed', 'Scanning has stopped, and the guest list was removed from this phone.');
+      return pick('That workshop is closed, and its guest list was removed from this phone. Choose another workshop.');
     }
+    if (res.error === 'workshop') return pick('Choose the workshop this phone is scanning for.');
     show('error', 'Not saved', 'The Sheet answered: ' + (res.detail || res.error) + '. Scan again.');
     beep('error');
   }
@@ -148,21 +167,66 @@
       }
     } finally { S.flushing = false; syncLine(); }
   }
+  // The list of workshops, and for the chosen one its details, guest list and counts.
   async function hello() {
     try {
-      const res = await post({ action: 'hello' });
+      const res = await post({ action: 'hello', workshop: S.workshop });
       if (!res.ok) return problem(res);
+      S.workshops = res.workshops || [];
+      store.set('workshops', S.workshops);
+      if (!res.workshop) return pick(S.workshop ? 'Workshop ' + S.workshop + ' is not in the list any more. Choose another one.' : '');
+      if (res.closed) return problem({ error: 'closed' });
       S.guests = {};
       res.guests.forEach(([h, n]) => { S.guests[h] = n; });
-      store.set('guests', S.guests);
-      S.title = res.title + ', ' + res.day;
-      store.set('title', S.title);
-      $('title').textContent = S.title + (res.rehearsal ? ' (rehearsal on)' : '');
+      S.title = res.title;
+      S.when = res.day + ', ' + res.start + ' to ' + res.end + (res.venue ? ', ' + res.venue : '') + (res.rehearsal ? ' (rehearsal on)' : '');
+      store.set('guests', S.guests); store.set('title', S.title); store.set('when', S.when);
+      showTitle();
       counts(res.counts);
     } catch (e) { /* offline: the list saved on this phone is used */ }
   }
   // every half minute the phone reports how many scans it still holds, so Close can name a phone that is behind
-  function heartbeat() { post({ action: 'stats', phone: S.phone, pending: S.queue.length }).then(r => r && r.ok ? counts(r.counts) : r && problem(r)).catch(() => {}); }
+  function heartbeat() {
+    if (!S.workshop) return;
+    post({ action: 'stats', phone: S.phone, pending: S.queue.length, workshop: S.workshop }).then(r => r && r.ok ? counts(r.counts) : r && problem(r)).catch(() => {});
+  }
+
+  // ---- choosing the workshop: today's first, then the ones still to come, then the ones that have ended
+  function pick(note) {
+    const d = $('pick');
+    $('pick-note').hidden = !note;
+    $('pick-note').textContent = note || '';
+    $('pick-cancel').hidden = !S.workshop;
+    renderPick();
+    if (!d.open) d.showModal();
+  }
+  function renderPick() {
+    const list = $('pick-list'), now = Date.now(), today = new Date().toDateString();
+    list.textContent = '';
+    const order = w => (w.endAt < now ? 2 : new Date(w.at).toDateString() === today ? 0 : 1);
+    const ws = S.workshops.slice().sort((a, b) => order(a) - order(b) || a.at - b.at);
+    if (!ws.length) {
+      const li = document.createElement('li'); li.className = 'hint';
+      li.textContent = navigator.onLine ? 'No workshops are linked in the Sheet yet.' : 'Offline. The list appears when the phone is connected.';
+      list.appendChild(li);
+    }
+    ws.forEach(w => {
+      const li = document.createElement('li'), b = document.createElement('button'), t = document.createElement('span'), m = document.createElement('span');
+      b.type = 'button'; b.className = 'pick' + (w.key === S.workshop ? ' current' : '');
+      t.className = 'p-title'; t.textContent = w.title;
+      m.className = 'p-when';
+      m.textContent = w.day + ', ' + w.start + ' to ' + w.end + (w.venue ? ', ' + w.venue : '') +
+        (w.closed ? '. Closed' : w.endAt < now ? '. Ended' : '');
+      b.disabled = !!w.closed;
+      b.append(t, m);
+      b.addEventListener('click', () => { setWorkshop(w.key); $('pick').close(); showTitle(); counts({ inside: 0, checkedIn: 0, certificates: 0 }); idle(); hello(); });
+      li.appendChild(b); list.appendChild(li);
+    });
+  }
+  $('change-ws').addEventListener('click', () => pick(''));
+  $('pick-cancel').addEventListener('click', () => $('pick').close());
+  // the list cannot be dismissed with Escape before a workshop is chosen
+  $('pick').addEventListener('cancel', e => { if (!S.workshop) e.preventDefault(); });
 
   // ---- a scan, from the camera, a scanner gun or a name picked by hand
   async function onCode(raw) {
@@ -173,10 +237,11 @@
     }
     if (S.lastRead[code] && now - S.lastRead[code] < 10000) return;   // the camera reads the same pass many times a second
     S.lastRead[code] = now;
+    if (!S.workshop) return pick('Choose the workshop this phone is scanning for, then scan again.');
     const mode = S.once ? 'EXIT' : S.mode;
     setOnce(false);
     const name = S.guests[(await sha(code)).slice(0, 16)] || '';
-    send({ action: 'scan', scanId: uuid(), code: code, mode: mode, at: now, phone: S.phone }, name);
+    send({ action: 'scan', scanId: uuid(), code: code, mode: mode, at: now, phone: S.phone, workshop: S.workshop }, name);
   }
 
   // ---- modes
@@ -254,7 +319,7 @@
       [['Check in', 'ENTRY'], ['Check out', 'EXIT']].forEach(([label, mode]) => {
         const b = document.createElement('button');
         b.type = 'button'; b.textContent = label;
-        b.onclick = () => { $('find').close(); send({ action: 'scan', scanId: uuid(), hash: hash, mode: mode, manual: true, at: Date.now(), phone: S.phone }, S.guests[hash]); };
+        b.onclick = () => { $('find').close(); send({ action: 'scan', scanId: uuid(), hash: hash, mode: mode, manual: true, at: Date.now(), phone: S.phone, workshop: S.workshop }, S.guests[hash]); };
         row.appendChild(b);
       });
       li.appendChild(who); li.appendChild(row); list.appendChild(li);
@@ -269,7 +334,7 @@
   $('w-cancel').addEventListener('click', () => $('walkin').close());
   $('walkin-form').addEventListener('submit', async e => {
     e.preventDefault();
-    const item = { action: 'walkin', scanId: uuid(), name: $('w-name').value.trim(), email: $('w-email').value.trim(), at: Date.now(), phone: S.phone };
+    const item = { action: 'walkin', scanId: uuid(), name: $('w-name').value.trim(), email: $('w-email').value.trim(), at: Date.now(), phone: S.phone, workshop: S.workshop };
     let res;
     try { res = await post(item); }
     catch (err) { queueItem(item); $('walkin').close(); show('queued', item.name, 'No connection. Saved on this phone with the time; they are checked in when it is sent.'); return; }
@@ -285,6 +350,7 @@
     store.set('phone', S.phone);
     $('phone-label').textContent = 'This phone: ' + S.phone;
     $('name-phone').close();
+    if (!S.workshop) pick('');
     heartbeat();
   });
   async function wake() { try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) { /* allowed again after the next tap */ } }
@@ -293,19 +359,20 @@
   function start() {
     if (S.badLink) return block('This is not a valid scanner link', 'Open the scanner from the QR code the organiser shows in the Sheet, under Workshop > Open scanner.');
     if (S.switchTo) {
-      $('switch-text').textContent = 'This phone is set up for another workshop link. Use the new link? ' +
+      $('switch-text').textContent = 'This phone is set up for another scanner link. Use the new link? ' +
         (S.queue.length ? 'Scans still waiting for the current link stay on this phone and are not sent to the new one.' : '');
       $('switch').showModal();
-      $('switch-yes').onclick = () => { adopt(S.switchTo.api, S.switchTo.key); S.switchTo = null; $('switch').close(); start(); };
+      $('switch-yes').onclick = () => { adopt(S.switchTo.api, S.switchTo.key); S.switchTo = null; if (WS_RE.test(newWs)) setWorkshop(newWs); $('switch').close(); start(); };
       $('switch-no').onclick = () => { S.switchTo = null; $('switch').close(); start(); };
       return;
     }
     if (!S.api || !S.key) return block('Open the scanner from the staff link', 'The organiser shows it as a QR code in the Sheet, under Workshop > Open scanner.');
     if (S.started) return;
     S.started = true;
-    $('title').textContent = S.title || 'Workshop scanner';
+    showTitle();
     $('phone-label').textContent = S.phone ? 'This phone: ' + S.phone : '';
     if (!S.phone) $('name-phone').showModal();
+    else if (!S.workshop) pick('');
     idle(); syncLine(); hello(); camera(); wake(); flush();
     setInterval(flush, 5000); setInterval(heartbeat, 30000); setInterval(hello, 120000);
     window.addEventListener('online', () => { flush(); syncLine(); });
