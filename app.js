@@ -14,6 +14,8 @@
   const S = { api: store.get('api', ''), key: store.get('key', ''), phone: store.get('phone', ''), mode: 'ENTRY', once: false,
     workshop: store.get('workshop', ''), workshops: store.get('workshops', []), guests: store.get('guests', {}), title: store.get('title', ''),
     when: store.get('when', ''), queue: store.get('queue', []), lastRead: {}, detector: null, busy: false };
+  // a phone that ran the one-workshop version still holds that workshop's title and guest list: they belong to no workshop now
+  if (!S.workshop) { S.guests = {}; S.title = ''; S.when = ''; }
 
   // The staff link is <page>#api=<web app URL>&key=<staff key>. The phone keeps both, and the key leaves the address bar,
   // so it is not on screen while the phone is passed around. Only a Google Apps Script web app address is accepted, so a
