@@ -276,7 +276,7 @@
     if (!box) return;
     const w = S.workshops.find(x => x.key === S.workshop), now = Date.now(), today = new Date().toDateString();
     let text = '', acts = [];
-    if (w && new Date(w.at).toDateString() !== today) {
+    if (w && !w.test && new Date(w.at).toDateString() !== today) {        // a trial (ticked Test) runs on any day
       text = 'This phone is set to ' + w.title + ', ' + w.day + '. Today is ' + new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }) + '.';
       acts = [['Change workshop', () => pick('')]];
     } else if (w && w.endAt < now) {
@@ -501,7 +501,7 @@
     hello().then(() => {
       if (S.askWorkshop) return askSwitchWorkshop();
       const w = S.workshops.find(x => x.key === S.workshop);
-      if (w && new Date(w.at).toDateString() !== new Date().toDateString() && S.phone) pick('This phone was set to ' + w.title + ', ' + w.day + '. Choose today\'s workshop.');
+      if (w && !w.test && new Date(w.at).toDateString() !== new Date().toDateString() && S.phone) pick('This phone was set to ' + w.title + ', ' + w.day + '. Choose today\'s workshop.');
     });
     setInterval(heartbeat, 30000); setInterval(maybeHello, 15000); setInterval(banner, 60000); setInterval(() => syncLine(), 20000);
     window.addEventListener('online', () => { Q.kick(); syncLine(); });
