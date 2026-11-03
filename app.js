@@ -1,27 +1,33 @@
 // Workshop scanner. Reads passes with the phone camera (or a USB scanner gun) and reports each scan to the Apps Script web
-// app named in the staff link. A scan made without a connection is kept on the phone with its scan time and sent when the
-// connection returns. The other side is doPost in apps-script/Code.gs. Built 23 Oct 2026.
-// One Sheet can run several workshops (28 Oct 2026): the phone asks which workshop it is scanning for, and every scan, walk-in
-// and search carries that workshop's key. A pass for another workshop is shown as such and not counted.
+// app named in the staff link. The other side is doPost in apps-script/Code.gs. Built 23 Oct 2026.
+// One Sheet can run several workshops (28 Oct 2026): the phone asks which workshop it is scanning for. A pass for another
+// workshop is shown as such and not counted, except an exit of someone still inside their own workshop (a shared door).
+// 3 Nov 2026: every scan is saved on the phone first and sent in batches by queue.js, until the Sheet has answered for it;
+// Entrance and Exit only (seat check removed); visits are numbered ("Entrance 2"); each phone has a device ID.
 (() => {
   'use strict';
+  const BUILD = 8;                       // also in sw.js (cache name) and in index.html (?v=8); the server asks older pages to reload
   const $ = id => document.getElementById(id);
+  const on = (id, ev, fn) => { const el = $(id); if (el) el.addEventListener(ev, fn); };   // a missing element never stops the page
   const store = {
     get(k, d) { try { const v = localStorage.getItem('ws.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem('ws.' + k, JSON.stringify(v)); } catch (e) { /* private mode: work without saving */ } },
     drop(k) { try { localStorage.removeItem('ws.' + k); } catch (e) { /* nothing saved */ } }
   };
-  const S = { api: store.get('api', ''), key: store.get('key', ''), phone: store.get('phone', ''), mode: 'ENTRY', once: false,
-    workshop: store.get('workshop', ''), workshops: store.get('workshops', []), guests: store.get('guests', {}), title: store.get('title', ''),
-    when: store.get('when', ''), queue: store.get('queue', []), lastRead: {}, detector: null, busy: false };
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+  const S = { api: store.get('api', ''), key: store.get('key', ''), phone: store.get('phone', ''), device: store.get('device', ''),
+    mode: store.get('mode', 'ENTRY') === 'EXIT' ? 'EXIT' : 'ENTRY', workshop: store.get('workshop', ''), workshops: store.get('workshops', []),
+    guests: store.get('guests', {}), title: store.get('title', ''), when: store.get('when', ''), info: store.get('info', null),
+    lastRead: {}, detector: null, busy: false, recent: [], update: false, counts: null };
+  if (!S.device) { S.device = uuid(); store.set('device', S.device); }
   // a phone that ran the one-workshop version still holds that workshop's title and guest list: they belong to no workshop now
-  if (!S.workshop) { S.guests = {}; S.title = ''; S.when = ''; }
+  if (!S.workshop) { S.guests = {}; S.title = ''; S.when = ''; S.info = null; }
 
   // The staff link is <page>#api=<web app URL>&key=<staff key>. The phone keeps both, and the key leaves the address bar,
   // so it is not on screen while the phone is passed around. Only a Google Apps Script web app address is accepted, so a
   // forged link cannot send scans (or a walk-in's name and email) anywhere else; a phone already set up for another address
   // asks before switching, and scans waiting on the phone are only ever sent to the address they were made for.
-  // The link may also name one workshop (&w=W03), which the phone then opens straight away.
+  // A link made for one workshop (&w=W03) opens it straight away, after asking if the phone is set to another workshop.
   const API_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/, KEY_RE = /^[0-9a-f]{32}$/, WS_RE = /^[A-Za-z0-9]{1,12}$/;
   const link = new URLSearchParams(location.hash.slice(1)), newApi = link.get('api') || '', newKey = link.get('key') || '', newWs = link.get('w') || '';
   if (location.hash) history.replaceState(null, '', location.pathname + location.search);
@@ -30,20 +36,24 @@
     else if (!S.api || newApi === S.api) { if (newKey !== S.key) adopt(newApi, newKey); }
     else S.switchTo = { api: newApi, key: newKey };                   // another Sheet: confirm first (see start)
   }
-  if (!S.badLink && WS_RE.test(newWs) && (!S.switchTo || newApi === S.api)) setWorkshop(newWs);
+  if (!S.badLink && WS_RE.test(newWs) && (!S.switchTo || newApi === S.api)) {
+    if (!S.workshop || S.workshop === newWs) setWorkshop(newWs); else S.askWorkshop = newWs;
+  }
   function adopt(api, key) {
     if (api !== S.api) { setWorkshop(''); S.workshops = []; store.drop('workshops'); }
     S.api = api; S.key = key; store.set('api', api); store.set('key', key);
   }
-  // A new workshop starts with an empty guest list, filled by the next hello.
+  // A new workshop starts with an empty guest list, filled by the next hello, and in Entrance mode.
   function setWorkshop(key) {
     if (key === S.workshop) return;
-    S.workshop = key; S.guests = {}; S.title = ''; S.when = '';
-    store.set('workshop', key); ['guests', 'title', 'when'].forEach(k => store.drop(k));
+    S.workshop = key; S.guests = {}; S.title = ''; S.when = ''; S.info = null;
+    store.set('workshop', key); ['guests', 'title', 'when', 'info'].forEach(k => store.drop(k));
+    setMode('ENTRY');
   }
   function showTitle() {
     $('title').textContent = S.title || (S.workshop ? 'Workshop ' + S.workshop : 'Workshop scanner');
     $('when').textContent = S.when;
+    banner();
   }
 
   // ---- pass codes: the same rule as normalizeCode in apps-script/Logic.gs (O reads as 0, I and L as 1)
@@ -58,7 +68,6 @@
     const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
     return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
   }
-  const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
   const hm = ms => new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
   // ---- what the staff member sees and hears
@@ -66,7 +75,9 @@
     $('result').className = 'result ' + kind;
     $('r-name').textContent = name;
     $('r-line').textContent = line;
-    const box = $('r-actions');
+    buttons($('r-actions'), actions);
+  }
+  function buttons(box, actions) {
     box.textContent = '';
     (actions || []).forEach(([label, fn]) => {
       const b = document.createElement('button');
@@ -74,9 +85,8 @@
       box.appendChild(b);
     });
   }
-  const MODE_LINE = { ENTRY: 'Entry mode: a scan checks the person in.', EXIT: 'Exit mode: a scan checks the person out.',
-    SWEEP: 'Seat check: scan passes at the seats after minute 30.' };
-  function idle() { show('idle', 'Point the camera at a pass', S.once ? 'The next scan checks the person out.' : MODE_LINE[S.mode]); }
+  const MODE_LINE = { ENTRY: 'Entrance: a scan checks the person in.', EXIT: 'Exit: a scan checks the person out.' };
+  function idle() { show('idle', 'Point the camera at a pass', MODE_LINE[S.mode]); }
   let audio = null;
   function beep(kind) {
     try {
@@ -92,60 +102,129 @@
   }
   // iPhones only allow sound after a tap, so the first tap anywhere prepares it
   document.addEventListener('pointerdown', () => { try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch (e) { /* no sound */ } }, { once: true });
-  function counts(c) { if (!c) return; $('c-inside').textContent = c.inside; $('c-in').textContent = c.checkedIn; $('c-cert').textContent = c.certificates; }
+  function counts(c) {
+    if (!c) return;
+    S.counts = c;
+    $('c-inside').textContent = c.inside; $('c-in').textContent = c.checkedIn; $('c-cert').textContent = c.certificates;
+  }
   function block(title, text) { $('blocker-title').textContent = title; $('blocker-text').textContent = text; $('blocker').hidden = false; }
-  const mine = () => S.queue.filter(x => x.api === S.api);
-  function syncLine() {
-    const n = mine().length, held = S.queue.length - n;
-    $('sync').textContent = (n ? n + (n === 1 ? ' scan' : ' scans') + ' waiting to send' : (navigator.onLine ? 'All scans sent' : 'Offline')) +
-      (held ? '. ' + held + ' held for an earlier workshop link' : '');
+
+  // ---- talking to the web app (JSON sent as text/plain, so no preflight; Apps Script answers through a redirect). A request
+  // with no answer after 40 seconds is given up and tried again (the Sheet waits at most 20 seconds for its lock).
+  async function post(body) {
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null, t = ctl ? setTimeout(() => ctl.abort(), 40000) : null;
+    try {
+      const r = await fetch(S.api, { method: 'POST', credentials: 'omit', redirect: 'follow', signal: ctl ? ctl.signal : undefined,
+        body: JSON.stringify(Object.assign({ key: S.key, build: BUILD, device: S.device, phone: S.phone, sentAt: Date.now() }, body)) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const res = await r.json();
+      if (res && res.update) { S.update = true; updateBar(); }
+      return res;
+    } finally { if (t) clearTimeout(t); }
+  }
+  // what one queued item is sent as: a walk-in on its own; scans together; one at a time to a server from before 3 Nov 2026
+  async function sendBatch(batch) {
+    if (batch[0].action === 'walkin') {
+      const x = batch[0], res = await post(strip(x));
+      if (res && res.ok === false && (res.error === 'key' || res.error === 'refused' || res.error === 'closed' || res.error === 'workshop')) {
+        return res.error === 'key' ? res : { ok: true, results: [{ scanId: x.scanId, effect: res.error === 'refused' ? 'REFUSED' : 'CLOSED', why: res.why || '' }] };
+      }
+      if (!res || !res.ok) return res;
+      return { ok: true, counts: res.counts, results: [Object.assign({ scanId: x.scanId }, res)] };
+    }
+    const res = await post({ action: 'scans', workshop: S.workshop, items: batch.map(strip) });
+    if (res && res.ok === false && res.error === 'unknown action') {          // the server was rolled back: the old one-scan request
+      const results = [];
+      for (const x of batch) {
+        const one = await post(Object.assign({ action: 'scan' }, strip(x)));
+        results.push(one.ok ? Object.assign({ scanId: x.scanId }, one) : { scanId: x.scanId, effect: one.error === 'closed' ? 'CLOSED' : one.error === 'key' ? 'RETRY' : 'ERROR' });
+        if (one.counts) counts(one.counts);
+      }
+      return { ok: true, results: results };
+    }
+    if (res && res.counts) counts(res.counts);
+    return res;
+  }
+  const strip = x => { const o = Object.assign({}, x); delete o.api; delete o.name; delete o.errors; return Object.assign(o, x.action === 'walkin' ? { name: x.name } : {}); };
+
+  // ---- the queue: every scan is saved first; scans for an earlier staff link stay on the phone and are never sent elsewhere
+  const held = () => store.get('queue', []).filter(x => x.api && x.api !== S.api);
+  let Q = null;                          // set just below; the queue reports its state while it is being made
+  Q = ScanQueue.create({
+    load: () => store.get('queue', []).filter(x => !x.api || x.api === S.api),
+    save: items => store.set('queue', held().concat(items.map(x => Object.assign({ api: S.api }, x)))),
+    send: sendBatch,
+    onResult: (item, r) => answered(item, r),
+    onState: st => syncLine(st)
+  });
+  Q.onBlocked = () => problem({ error: 'key' });
+  function syncLine(st) {
+    const n = st ? st.waiting : Q ? Q.size() : 0, h = held().length, el = $('sync');
+    if (!el) return;
+    el.textContent = (n ? n + (n === 1 ? ' scan' : ' scans') + ' waiting to send' + (st && st.oldest && Date.now() - st.oldest > 60000 ? ', the oldest from ' + hm(st.oldest) : '')
+      : navigator.onLine ? 'All scans sent' : 'Offline') + (h ? '. ' + h + ' held for an earlier scanner link' : '');
+    el.className = n ? 'waiting' : '';
+    updateBar();
   }
 
-  // ---- talking to the web app (JSON sent as text/plain, so no preflight; Apps Script answers through a redirect)
-  async function post(body) {
-    const r = await fetch(S.api, { method: 'POST', body: JSON.stringify(Object.assign({ key: S.key }, body)), credentials: 'omit', redirect: 'follow' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.json();
-  }
-  function queueItem(item) { S.queue.push(Object.assign({ api: S.api }, item)); store.set('queue', S.queue); syncLine(); }
-  async function send(item, name) {
-    show('pending', name || 'Checking the pass', 'Sending to the Sheet.');
-    let res;
-    try { res = await post(item); }
-    catch (e) {
-      queueItem(item);
-      show('queued', name || 'Saved on this phone', 'No connection. The scan is kept with its time and sent when the connection returns.');
-      beep('warn');
-      return;
+  // ---- a scan: saved, shown and heard at once; the Sheet's answer follows (answered)
+  function record(item, name) {
+    item.scanId = item.scanId || uuid();
+    Q.add(item);
+    const entry = { id: item.scanId, at: item.at, name: name || 'Pass', mode: item.mode, line: 'Saving', kind: 'pending', item: item, actions: [] };
+    S.recent.unshift(entry); S.recent = S.recent.slice(0, 8);
+    if (item.mode === 'ENTRY' || item.mode === 'EXIT') {
+      show(item.mode === 'ENTRY' ? 'in' : 'out', entry.name, (item.mode === 'ENTRY' ? 'Entrance' : 'Exit') + '. Saving.');
+      beep(item.mode === 'ENTRY' ? 'in' : 'out');
     }
-    handle(res, item, name);
+    renderRecent();
   }
-  function handle(res, item, name) {
-    if (!res.ok) return problem(res);
-    counts(res.counts);
-    const who = res.name || name || 'Pass found', since = res.since ? hm(res.since) : '';
-    const again = extra => () => send(Object.assign({}, item, { scanId: uuid(), at: Date.now() }, extra), who);
-    switch (res.effect) {
-      case 'IN': show('in', who, 'Checked in at ' + hm(item.at) + '.'); beep('in'); break;
-      case 'ALREADY_IN': show('pending', who, 'Already inside' + (since ? ' since ' + since : '') + '. Nothing changed.'); beep('warn'); break;
-      case 'OUT':
-        show('out', who, res.minutes + (res.minutes === 1 ? ' minute' : ' minutes') + ' counted. ' + (res.status === 'ELIGIBLE' ? 'The certificate is on its way by email.'
-          : res.status === 'BORDERLINE' ? 'Borderline: the organiser decides.' : 'Under the minimum, so no certificate.'));
-        beep('out'); break;
-      case 'EXIT_TOO_SOON': show('warn', who, 'Checked in at ' + since + '. Check them out already?', [['Yes, check out', again({ confirmed: true })]]); beep('warn'); break;
-      case 'NOT_IN': show('warn', who, 'Not checked in, so there is nothing to check out.', [['Check in now', again({ mode: 'ENTRY' })]]); beep('warn'); break;
-      case 'SEEN': show('in', who, 'Seen at the seat check.'); beep('in'); break;
-      case 'SEEN_NOT_IN': show('warn', who, 'Seen at a seat, but never checked in at the door.', [['Check in now', again({ mode: 'ENTRY' })]]); beep('warn'); break;
-      case 'OTHER_WORKSHOP':
-        show('warn', who, 'This pass is for ' + res.other.title + ', ' + res.other.day + ' at ' + res.other.start + '. Not counted here.');
-        beep('warn'); break;
-      case 'REPEAT': break;
-      case 'UNKNOWN': show('error', 'Pass not found', 'This code is not registered for any workshop.'); beep('error'); break;
-      default: show('pending', who, 'Saved.');
+  function answered(item, r) {
+    const entry = S.recent.find(x => x.id === item.scanId) || { id: item.scanId, at: item.at, mode: item.mode, item: item, actions: [] };
+    if (!S.recent.includes(entry)) { S.recent.unshift(entry); S.recent = S.recent.slice(0, 8); }
+    entry.name = r.name || entry.name || 'Pass';
+    const v = describe(item, r);
+    entry.line = v.line; entry.kind = v.kind; entry.actions = v.actions || [];
+    if (r.inside != null && item.hash) noteInside(item.hash, r);
+    if (S.recent[0] === entry || v.kind === 'warn' || v.kind === 'error') { show(v.kind, entry.name, v.line, v.actions); if (v.kind === 'warn' || v.kind === 'error') beep(v.kind); }
+    renderRecent();
+  }
+  // the words for one answer from the Sheet
+  function describe(item, r) {
+    const min = r.minMinutes || (S.info && S.info.minMinutes) || 45, n = r.visit > 1 ? ' ' + r.visit : '';
+    const fix = (label, extra) => [label, () => record(Object.assign({}, item, { scanId: uuid(), at: item.at + 1, fix: true, confirmed: true }, extra), r.name)];
+    switch (r.effect) {
+      case 'IN': return { kind: 'in', line: 'Entrance' + n + (r.minutes > 0 ? '. ' + r.minutes + (r.minutes >= min ? '' : ' of ' + min) + ' min so far' : '') + '.' };
+      case 'ALREADY_IN': return { kind: 'warn', line: 'Already inside' + (r.since ? ' since ' + hm(r.since) : '') + '. Leaving?', actions: [fix('Check out now', { mode: 'EXIT' })] };
+      case 'OUT': return { kind: 'out', line: (r.cross ? 'Exit recorded for ' + r.cross.title + '. ' : 'Exit' + n + '. ') + r.minutes + (r.minutes >= min
+        ? ' min. ' + (r.certificate === 'sent' ? 'Certificate already sent.' : 'The certificate is on its way by email.') : ' of ' + min + ' min.') };
+      case 'EXIT_TOO_SOON': return { kind: 'warn', line: 'Checked in at ' + (r.since ? hm(r.since) : 'just now') + '. Check them out already?', actions: [fix('Yes, check out', { mode: 'EXIT' })] };
+      case 'NOT_IN': return { kind: 'warn', line: 'Exit saved. Their entrance has not reached the Sheet yet.' };
+      case 'OTHER_WORKSHOP': return { kind: 'warn', line: 'This pass is for ' + (r.other ? (r.other.venue ? r.other.venue + ': ' : '') + r.other.title + ', ' + r.other.day + ' at ' + r.other.start : 'another workshop') + '. Not counted here.' };
+      case 'CLOSED': return { kind: 'error', line: 'Not counted: this workshop closed before this scan.' };
+      case 'UNKNOWN': return { kind: 'error', line: 'Pass not found. This code is not registered for any workshop.' };
+      case 'REFUSED': return { kind: 'error', line: 'Walk-in not added: ' + (r.why || 'the name or email was refused') + '.' };
+      case 'ERROR': return { kind: 'error', line: 'Not saved after 5 tries. Scan again, or use Find a name.' };
+      case 'REPEAT': return { kind: 'pending', line: 'Read twice, counted once.' };
+      default: return { kind: 'pending', line: 'Saved.' };
     }
+  }
+  function renderRecent() {
+    const list = $('recent');
+    if (!list) return;
+    list.textContent = '';
+    S.recent.forEach(e => {
+      const li = document.createElement('li'), top = document.createElement('div'), line = document.createElement('div'), acts = document.createElement('div');
+      li.className = 'rc ' + e.kind;
+      top.className = 'rc-top'; top.textContent = hm(e.at) + '  ' + e.name;
+      line.className = 'rc-line'; line.textContent = e.line;
+      acts.className = 'rc-actions'; buttons(acts, e.actions);
+      li.append(top, line, acts); list.appendChild(li);
+    });
+    $('recent-wrap').hidden = !S.recent.length;
   }
   function problem(res) {
-    if (res.error === 'key') return block('This scanner link no longer works', 'Ask the organiser for the new link. It is in the Sheet under Workshop > Open scanner.');
+    if (res.error === 'key') return block('This scanner link no longer works', 'Scans waiting on this phone are kept. Ask the organiser for the new link: in the Sheet, Workshop > Open scanner.');
     if (res.error === 'closed') {
       S.guests = {}; store.drop('guests');
       return pick('That workshop is closed, and its guest list was removed from this phone. Choose another workshop.');
@@ -154,22 +233,8 @@
     show('error', 'Not saved', 'The Sheet answered: ' + (res.detail || res.error) + '. Scan again.');
     beep('error');
   }
-  async function flush() {
-    if (!mine().length || S.flushing) return;
-    S.flushing = true;
-    try {
-      for (let next = mine()[0]; next; next = mine()[0]) {
-        const body = Object.assign({}, next);
-        delete body.api;
-        let res;
-        try { res = await post(body); } catch (e) { break; }                     // still offline: try again later
-        S.queue.splice(S.queue.indexOf(next), 1); store.set('queue', S.queue);
-        if (res && res.counts) counts(res.counts);
-        if (res && !res.ok && (res.error === 'key' || res.error === 'closed')) { problem(res); break; }
-      }
-    } finally { S.flushing = false; syncLine(); }
-  }
-  // The list of workshops, and for the chosen one its details, guest list and counts.
+
+  // ---- the list of workshops, and for the chosen one its details, guest list and counts
   async function hello() {
     try {
       const res = await post({ action: 'hello', workshop: S.workshop });
@@ -179,19 +244,57 @@
       if (!res.workshop) return pick(S.workshop ? 'Workshop ' + S.workshop + ' is not in the list any more. Choose another one.' : '');
       if (res.closed) return problem({ error: 'closed' });
       S.guests = {};
-      res.guests.forEach(([h, n]) => { S.guests[h] = n; });
+      res.guests.forEach(([h, n, inside, status]) => { S.guests[h] = { name: n, inside: !!inside, status: status || '' }; });
       S.title = res.title;
       S.when = res.day + ', ' + res.start + ' to ' + res.end + (res.venue ? ', ' + res.venue : '') + (res.rehearsal ? ' (rehearsal on)' : '');
-      store.set('guests', S.guests); store.set('title', S.title); store.set('when', S.when);
+      S.info = { at: res.at, endAt: res.endAt, minMinutes: res.minMinutes };
+      store.set('guests', S.guests); store.set('title', S.title); store.set('when', S.when); store.set('info', S.info);
       showTitle();
       counts(res.counts);
     } catch (e) { /* offline: the list saved on this phone is used */ }
   }
-  // every half minute the phone reports how many scans it still holds, so Close can name a phone that is behind
+  const guestName = h => { const g = S.guests[h]; return !g ? '' : typeof g === 'string' ? g : g.name; };
+  function noteInside(h, r) {
+    const g = S.guests[h];
+    if (g && typeof g === 'object') { g.inside = !!r.inside; g.status = r.inside && r.since ? 'Inside since ' + hm(r.since) : ''; store.set('guests', S.guests); }
+  }
+  // every half minute the phone reports how many scans it still holds, so the organiser can see a phone that is behind
   function heartbeat() {
     if (!S.workshop) return;
-    post({ action: 'stats', phone: S.phone, pending: S.queue.length, workshop: S.workshop }).then(r => r && r.ok ? counts(r.counts) : r && problem(r)).catch(() => {});
+    post({ action: 'stats', pending: Q.size(), workshop: S.workshop }).then(r => r && r.ok ? counts(r.counts) : r && problem(r)).catch(() => {});
   }
+  // the guest list every 2 minutes, and every 30 seconds in the last 15 minutes of the session (who is still inside)
+  let lastHello = 0;
+  function maybeHello() {
+    const end = S.info && S.info.endAt, now = Date.now(), near = end && now > end - 15 * 60000 && now < end + 30 * 60000;
+    if (now - lastHello >= (near ? 30000 : 120000)) { lastHello = now; hello(); }
+  }
+
+  // ---- banners: a workshop that is not today's, one that has ended while another runs, and a new scanner version
+  function banner() {
+    const box = $('banner');
+    if (!box) return;
+    const w = S.workshops.find(x => x.key === S.workshop), now = Date.now(), today = new Date().toDateString();
+    let text = '', acts = [];
+    if (w && new Date(w.at).toDateString() !== today) {
+      text = 'This phone is set to ' + w.title + ', ' + w.day + '. Today is ' + new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }) + '.';
+      acts = [['Change workshop', () => pick('')]];
+    } else if (w && w.endAt < now) {
+      const running = S.workshops.filter(x => x.key !== w.key && !x.closed && x.at - 20 * 60000 <= now && x.endAt > now);
+      text = w.title + ' ended at ' + w.end + '.' + (running.length ? ' Running now: ' + running.map(x => x.title + (x.venue ? ' (' + x.venue + ')' : '')).join(', ') + '.' : '');
+      acts = running.length === 1 ? [['Switch to ' + running[0].key, () => choose(running[0])]] : running.length ? [['Change workshop', () => pick('')]] : [];
+    }
+    box.hidden = !text;
+    $('banner-text').textContent = text;
+    buttons($('banner-actions'), acts);
+  }
+  function updateBar() {
+    const bar = $('update');
+    if (!bar) return;
+    const w = S.workshops.find(x => x.key === S.workshop), now = Date.now(), running = w && w.at - 20 * 60000 <= now && w.endAt > now;
+    bar.hidden = !(S.update && Q && !Q.size() && !running);  // never while scans are waiting or the session is on
+  }
+  on('update-go', 'click', () => location.reload());
 
   // ---- choosing the workshop: today's first, then the ones still to come, then the ones that have ended
   function pick(note) {
@@ -202,6 +305,7 @@
     renderPick();
     if (!d.open) d.showModal();
   }
+  function choose(w) { setWorkshop(w.key); if ($('pick').open) $('pick').close(); showTitle(); counts({ inside: 0, checkedIn: 0, certificates: 0 }); idle(); lastHello = Date.now(); hello(); }
   function renderPick() {
     const list = $('pick-list'), now = Date.now(), today = new Date().toDateString();
     list.textContent = '';
@@ -215,20 +319,34 @@
     ws.forEach(w => {
       const li = document.createElement('li'), b = document.createElement('button'), t = document.createElement('span'), m = document.createElement('span');
       b.type = 'button'; b.className = 'pick' + (w.key === S.workshop ? ' current' : '');
-      t.className = 'p-title'; t.textContent = w.title;
+      t.className = 'p-title'; t.textContent = (w.venue ? w.venue + ': ' : '') + w.title;
       m.className = 'p-when';
-      m.textContent = w.day + ', ' + w.start + ' to ' + w.end + (w.venue ? ', ' + w.venue : '') +
-        (w.closed ? '. Closed' : w.endAt < now ? '. Ended' : '');
+      m.textContent = w.day + ', ' + w.start + ' to ' + w.end + (w.closed ? '. Closed' : w.endAt < now ? '. Ended' : '');
       b.disabled = !!w.closed;
       b.append(t, m);
-      b.addEventListener('click', () => { setWorkshop(w.key); $('pick').close(); showTitle(); counts({ inside: 0, checkedIn: 0, certificates: 0 }); idle(); hello(); });
+      b.addEventListener('click', () => choose(w));
       li.appendChild(b); list.appendChild(li);
     });
   }
-  $('change-ws').addEventListener('click', () => pick(''));
-  $('pick-cancel').addEventListener('click', () => $('pick').close());
+  on('change-ws', 'click', () => pick(''));
+  on('pick-cancel', 'click', () => $('pick').close());
   // the list cannot be dismissed with Escape before a workshop is chosen
-  $('pick').addEventListener('cancel', e => { if (!S.workshop) e.preventDefault(); });
+  on('pick', 'cancel', e => { if (!S.workshop) e.preventDefault(); });
+
+  // ---- who is still inside: the guest list from the Sheet, with this phone's own unsent scans on top
+  function renderInside() {
+    const list = $('inside-list');
+    list.textContent = '';
+    const mineIn = {}, mineOut = {};
+    Q.list().forEach(x => { if (x.hash) (x.mode === 'EXIT' ? mineOut : mineIn)[x.hash] = true; });
+    const names = Object.keys(S.guests).filter(h => { const g = S.guests[h]; return !mineOut[h] && (mineIn[h] || (g && g.inside)); })
+      .map(h => ({ name: guestName(h), status: mineIn[h] ? 'Entrance not sent yet' : S.guests[h].status || 'Inside' })).sort((a, b) => a.name.localeCompare(b.name));
+    if (!names.length) { const li = document.createElement('li'); li.className = 'hint'; li.textContent = 'Nobody is inside, as far as this phone knows.'; list.appendChild(li); }
+    names.forEach(g => { const li = document.createElement('li'), a = document.createElement('div'), b = document.createElement('div');
+      a.className = 'who'; a.textContent = g.name; b.className = 'hint'; b.textContent = g.status; li.append(a, b); list.appendChild(li); });
+    $('inside-note').textContent = 'Scans made on other phones in the last 2 minutes may not show yet.';
+  }
+  on('open-inside', 'click', () => { renderInside(); $('inside').showModal(); lastHello = 0; maybeHello(); });
 
   // ---- a scan, from the camera, a scanner gun or a name picked by hand
   async function onCode(raw) {
@@ -237,23 +355,21 @@
       if (!S.lastRead[raw] || now - S.lastRead[raw] > 3000) { S.lastRead[raw] = now; show('error', 'Not a workshop pass', 'This QR code is not an AAU workshop pass.'); beep('error'); }
       return;
     }
-    if (S.lastRead[code] && now - S.lastRead[code] < 10000) return;   // the camera reads the same pass many times a second
-    S.lastRead[code] = now;
+    if (ScanQueue.isRepeat(S.lastRead, code, S.mode, now)) return;   // the same pass, same mode, within 60 seconds
     if (!S.workshop) return pick('Choose the workshop this phone is scanning for, then scan again.');
-    const mode = S.once ? 'EXIT' : S.mode;
-    setOnce(false);
-    const name = S.guests[(await sha(code)).slice(0, 16)] || '';
-    send({ action: 'scan', scanId: uuid(), code: code, mode: mode, at: now, phone: S.phone, workshop: S.workshop }, name);
+    const hash = (await sha(code)).slice(0, 16);
+    record({ action: 'scan', code: code, hash: hash, mode: S.mode, at: now, phone: S.phone, workshop: S.workshop }, guestName(hash) || 'Pass ' + code.slice(-4));
   }
 
-  // ---- modes
-  document.querySelectorAll('.modes button').forEach(b => b.addEventListener('click', () => {
-    S.mode = b.dataset.mode;
-    document.querySelectorAll('.modes button').forEach(x => x.setAttribute('aria-checked', String(x === b)));
-    setOnce(false); idle();
-  }));
-  function setOnce(v) { S.once = v; $('next-exit').setAttribute('aria-pressed', String(v)); $('next-exit').textContent = v ? 'Exit is on' : 'Next scan: Exit'; }
-  $('next-exit').addEventListener('click', () => { setOnce(!S.once); idle(); });
+  // ---- modes: Entrance and Exit, remembered on this phone (and back to Entrance when the workshop changes)
+  function setMode(m) {
+    S.mode = m === 'EXIT' ? 'EXIT' : 'ENTRY';
+    store.set('mode', S.mode);
+    document.querySelectorAll('.modes button').forEach(x => x.setAttribute('aria-checked', String(x.dataset.mode === S.mode)));
+    const strip = $('mode-strip');
+    if (strip) { strip.textContent = S.mode === 'ENTRY' ? 'Entrance' : 'Exit'; strip.className = 'mode-strip ' + (S.mode === 'ENTRY' ? 'is-in' : 'is-out'); }
+  }
+  document.querySelectorAll('.modes button').forEach(b => b.addEventListener('click', () => { setMode(b.dataset.mode); idle(); }));
 
   // ---- camera: the phone's own barcode reader where there is one (Chrome on Android), else the bundled zxing reader
   async function makeDetector() {
@@ -273,9 +389,9 @@
       v.srcObject = stream; await v.play();
       const track = stream.getVideoTracks()[0], caps = track.getCapabilities ? track.getCapabilities() : {};
       if (caps.torch) {
-        let on = false;
+        let lit = false;
         $('torch').hidden = false;
-        $('torch').onclick = () => { on = !on; track.applyConstraints({ advanced: [{ torch: on }] }); $('torch').textContent = on ? 'Torch off' : 'Torch'; };
+        $('torch').onclick = () => { lit = !lit; track.applyConstraints({ advanced: [{ torch: lit }] }); $('torch').textContent = lit ? 'Torch off' : 'Torch'; };
       }
       S.detector = await makeDetector();
       loop();
@@ -315,70 +431,81 @@
     list.textContent = '';
     const note = text => { const li = document.createElement('li'); li.className = 'hint'; li.textContent = text; list.appendChild(li); };
     if (f.length < 2) return note('Type at least 2 letters of the name.');
-    Object.keys(S.guests).filter(h => fold(S.guests[h]).indexOf(f) >= 0).slice(0, 8).forEach(hash => {
+    Object.keys(S.guests).filter(h => fold(guestName(h)).indexOf(f) >= 0).slice(0, 8).forEach(hash => {
       const li = document.createElement('li'), who = document.createElement('div'), row = document.createElement('div');
-      who.className = 'who'; who.textContent = S.guests[hash]; row.className = 'row';
+      who.className = 'who'; who.textContent = guestName(hash); row.className = 'row';
       [['Check in', 'ENTRY'], ['Check out', 'EXIT']].forEach(([label, mode]) => {
         const b = document.createElement('button');
         b.type = 'button'; b.textContent = label;
-        b.onclick = () => { $('find').close(); send({ action: 'scan', scanId: uuid(), hash: hash, mode: mode, manual: true, at: Date.now(), phone: S.phone, workshop: S.workshop }, S.guests[hash]); };
+        b.onclick = () => { $('find').close(); record({ action: 'scan', hash: hash, mode: mode, manual: true, at: Date.now(), phone: S.phone, workshop: S.workshop }, guestName(hash)); };
         row.appendChild(b);
       });
       li.appendChild(who); li.appendChild(row); list.appendChild(li);
     });
     if (!list.children.length) note('No match. For someone who did not register, use Add walk-in.');
   }
-  $('open-find').addEventListener('click', () => { $('find-q').value = ''; renderFind(''); $('find').showModal(); $('find-q').focus(); });
-  $('find-q').addEventListener('input', e => renderFind(e.target.value));
+  on('open-find', 'click', () => { $('find-q').value = ''; renderFind(''); $('find').showModal(); $('find-q').focus(); });
+  on('find-q', 'input', e => renderFind(e.target.value));
 
-  // ---- walk-ins
-  $('open-walkin').addEventListener('click', () => { $('walkin-form').reset(); $('w-error').hidden = true; $('walkin').showModal(); $('w-name').focus(); });
-  $('w-cancel').addEventListener('click', () => $('walkin').close());
-  $('walkin-form').addEventListener('submit', async e => {
+  // ---- walk-ins: saved and sent like scans, one at a time; the pass follows by email
+  on('open-walkin', 'click', () => { $('walkin-form').reset(); $('w-error').hidden = true; $('walkin').showModal(); $('w-name').focus(); });
+  on('w-cancel', 'click', () => $('walkin').close());
+  on('walkin-form', 'submit', e => {
     e.preventDefault();
-    const item = { action: 'walkin', scanId: uuid(), name: $('w-name').value.trim(), email: $('w-email').value.trim(), at: Date.now(), phone: S.phone, workshop: S.workshop };
-    let res;
-    try { res = await post(item); }
-    catch (err) { queueItem(item); $('walkin').close(); show('queued', item.name, 'No connection. Saved on this phone with the time; they are checked in when it is sent.'); return; }
-    if (!res.ok && res.error === 'refused') { $('w-error').hidden = false; $('w-error').textContent = res.why; return; }
+    const name = $('w-name').value.trim(), email = $('w-email').value.trim();
     $('walkin').close();
-    handle(res, item, item.name);
+    record({ action: 'walkin', name: name, email: email, at: Date.now(), phone: S.phone, workshop: S.workshop, mode: 'ENTRY' }, name);
   });
 
   // ---- this phone's name, the screen kept awake, start-up
-  $('phone-form').addEventListener('submit', e => {
+  on('phone-form', 'submit', e => {
     e.preventDefault();
     S.phone = $('phone-name').value.trim() || 'Phone';
     store.set('phone', S.phone);
-    $('phone-label').textContent = 'This phone: ' + S.phone;
+    $('phone-label').textContent = 'This phone: ' + S.phone + ' · Scanner ' + BUILD;
     $('name-phone').close();
     if (!S.workshop) pick('');
     heartbeat();
   });
   async function wake() { try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) { /* allowed again after the next tap */ } }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { wake(); flush(); } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { wake(); Q.kick(); } });
 
+  function askSwitchWorkshop() {
+    const w = S.workshops.find(x => x.key === S.askWorkshop), cur = S.workshops.find(x => x.key === S.workshop);
+    $('ws-switch-text').textContent = 'This link is for ' + (w ? w.title + (w.venue ? ', ' + w.venue : '') : 'workshop ' + S.askWorkshop) +
+      '. This phone is set to ' + (cur ? cur.title : 'workshop ' + S.workshop) + '. Switch?';
+    $('ws-switch').showModal();
+    $('ws-switch-yes').onclick = () => { const k = S.askWorkshop; S.askWorkshop = ''; $('ws-switch').close(); choose(w || { key: k }); };
+    $('ws-switch-no').onclick = () => { S.askWorkshop = ''; $('ws-switch').close(); };
+  }
   function start() {
     if (S.badLink) return block('This is not a valid scanner link', 'Open the scanner from the QR code the organiser shows in the Sheet, under Workshop > Open scanner.');
     if (S.switchTo) {
       $('switch-text').textContent = 'This phone is set up for another scanner link. Use the new link? ' +
-        (S.queue.length ? 'Scans still waiting for the current link stay on this phone and are not sent to the new one.' : '');
+        (Q.size() ? 'Scans still waiting for the current link stay on this phone and are not sent to the new one.' : '');
       $('switch').showModal();
-      $('switch-yes').onclick = () => { adopt(S.switchTo.api, S.switchTo.key); S.switchTo = null; if (WS_RE.test(newWs)) setWorkshop(newWs); $('switch').close(); start(); };
+      $('switch-yes').onclick = () => { adopt(S.switchTo.api, S.switchTo.key); S.switchTo = null; if (WS_RE.test(newWs)) setWorkshop(newWs); $('switch').close(); location.reload(); };
       $('switch-no').onclick = () => { S.switchTo = null; $('switch').close(); start(); };
       return;
     }
     if (!S.api || !S.key) return block('Open the scanner from the staff link', 'The organiser shows it as a QR code in the Sheet, under Workshop > Open scanner.');
     if (S.started) return;
     S.started = true;
+    setMode(S.mode);
     showTitle();
-    $('phone-label').textContent = S.phone ? 'This phone: ' + S.phone : '';
+    $('phone-label').textContent = S.phone ? 'This phone: ' + S.phone + ' · Scanner ' + BUILD : 'Scanner ' + BUILD;
     if (!S.phone) $('name-phone').showModal();
     else if (!S.workshop) pick('');
-    idle(); syncLine(); hello(); camera(); wake(); flush();
-    setInterval(flush, 5000); setInterval(heartbeat, 30000); setInterval(hello, 120000);
-    window.addEventListener('online', () => { flush(); syncLine(); });
-    window.addEventListener('offline', syncLine);
+    idle(); syncLine(); camera(); wake();
+    lastHello = Date.now();
+    hello().then(() => {
+      if (S.askWorkshop) return askSwitchWorkshop();
+      const w = S.workshops.find(x => x.key === S.workshop);
+      if (w && new Date(w.at).toDateString() !== new Date().toDateString() && S.phone) pick('This phone was set to ' + w.title + ', ' + w.day + '. Choose today\'s workshop.');
+    });
+    setInterval(heartbeat, 30000); setInterval(maybeHello, 15000); setInterval(banner, 60000); setInterval(() => syncLine(), 20000);
+    window.addEventListener('online', () => { Q.kick(); syncLine(); });
+    window.addEventListener('offline', () => syncLine());
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   }
   start();

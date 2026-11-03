@@ -27,12 +27,31 @@ button:focus-visible, input:focus-visible { outline: 3px solid #1a73e8; outline-
 .counts div { background: rgba(255, 255, 255, 0.1); border-radius: 6px; padding: 6px 8px; }
 .counts dt { font-size: 12px; opacity: 0.8; }
 .counts dd { margin: 0; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* the Inside number opens the list of who is still inside */
+.count-link { display: flex; align-items: baseline; gap: 6px; width: 100%; min-height: 44px; padding: 0; background: transparent; color: #fff;
+  font-size: 22px; font-weight: 700; text-align: left; }
+.count-more { font-size: 12px; font-weight: 600; text-decoration: underline; opacity: 0.9; }
+
+/* a workshop that is not today's, or one that has ended while another runs; a new scanner version */
+.banner, .update { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; color: #fff; }
+.banner { background: var(--warn); }
+.update { background: var(--ink-muted); }
+.banner p, .update p { margin: 0; flex: 1 1 220px; font-size: 15px; }
+.banner button, .update button { background: #fff; color: var(--ink); }
+.banner[hidden], .update[hidden] { display: none; }
+.banner-actions { display: flex; gap: 8px; }
 
 main { flex: 1; display: flex; flex-direction: column; gap: var(--gap); padding: 12px 16px; max-width: 560px; width: 100%; margin: 0 auto; }
 
-.modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; background: var(--surface-muted); padding: 4px; border-radius: 10px; }
-.modes button { background: transparent; color: var(--ink); font-weight: 600; }
-.modes button[aria-checked="true"] { background: var(--ink); color: #fff; }
+.modes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; background: var(--surface-muted); padding: 4px; border-radius: 10px; }
+.modes button { min-height: 56px; background: transparent; color: var(--ink); font-size: 19px; font-weight: 700; }
+.modes button[data-mode="ENTRY"][aria-checked="true"] { background: var(--in); color: #fff; }
+.modes button[data-mode="EXIT"][aria-checked="true"] { background: var(--out); color: #fff; }
+/* the mode in large letters over the camera, readable at arm's length */
+.mode-strip { position: absolute; top: 0; left: 0; right: 0; z-index: 1; margin: 0; padding: 6px 12px; color: #fff; font-size: 17px; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase; text-align: center; }
+.mode-strip.is-in { background: var(--in); }
+.mode-strip.is-out { background: var(--out); }
 
 .camera { position: relative; aspect-ratio: 4 / 3; background: #000; border-radius: var(--radius); overflow: hidden; }
 .camera video { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -56,12 +75,27 @@ main { flex: 1; display: flex; flex-direction: column; gap: var(--gap); padding:
 .result.queued { background: var(--ink-muted); color: #fff; }
 .result .r-actions button { background: #fff; color: var(--ink); }
 
-.actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .actions button { background: var(--surface-muted); color: var(--ink); font-size: 15px; padding: 0 8px; }
-#next-exit[aria-pressed="true"] { background: var(--out); color: #fff; }
 
-.status { display: flex; justify-content: space-between; gap: 12px; padding: 8px 16px; padding-bottom: max(8px, env(safe-area-inset-bottom));
-  font-size: 13px; color: var(--ink-muted); border-top: 1px solid var(--surface-muted); }
+/* every recent scan with its own answer, so one result never hides another */
+.recent-wrap h2 { margin: 4px 0 6px; font-size: 15px; color: var(--ink-muted); }
+.recent-wrap[hidden] { display: none; }
+.recent { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rc { border-left: 6px solid var(--surface-muted); background: var(--surface-muted); border-radius: 6px; padding: 8px 10px; }
+.rc.in { border-left-color: var(--in); }
+.rc.out { border-left-color: var(--out); }
+.rc.warn { border-left-color: var(--warn); }
+.rc.error { border-left-color: var(--error); }
+.rc-top { font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.rc-line { font-size: 15px; }
+.rc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.rc-actions:empty { display: none; }
+#sync.waiting { color: var(--warn); font-weight: 600; }
+
+/* pinned to the bottom of the screen, so "scans waiting to send" is always in sight */
+.status { position: sticky; bottom: 0; z-index: 2; display: flex; justify-content: space-between; gap: 12px; padding: 8px 16px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom)); font-size: 13px; color: var(--ink-muted); background: var(--surface); border-top: 1px solid var(--surface-muted); }
 
 dialog { border: 0; border-radius: 12px; padding: 0; width: min(92vw, 480px); }
 dialog::backdrop { background: rgba(0, 0, 0, 0.5); }

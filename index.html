@@ -9,7 +9,8 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css">
+<!-- ?v= is the scanner build (BUILD in app.js): a new page never runs with an old script from the browser cache -->
+<link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
 <!-- Door scanner for workshop passes. It talks only to the Apps Script web app named in the staff link
@@ -23,20 +24,29 @@
     <button type="button" class="change" id="change-ws">Change workshop</button>
   </div>
   <dl class="counts">
-    <div><dt>Inside</dt><dd id="c-inside">0</dd></div>
+    <div><dt>Inside</dt><dd><button type="button" class="count-link" id="open-inside"><span id="c-inside">0</span> <span class="count-more">See who</span></button></dd></div>
     <div><dt>Checked in</dt><dd id="c-in">0</dd></div>
     <div><dt>Certificates</dt><dd id="c-cert">0</dd></div>
   </dl>
 </header>
 
+<div class="banner" id="banner" hidden>
+  <p id="banner-text"></p>
+  <div class="banner-actions" id="banner-actions"></div>
+</div>
+<div class="update" id="update" hidden>
+  <p>A new version of the scanner is ready.</p>
+  <button type="button" id="update-go">Update scanner</button>
+</div>
+
 <main>
   <div class="modes" role="radiogroup" aria-label="What a scan records on this phone">
-    <button type="button" role="radio" data-mode="ENTRY" aria-checked="true">Entry</button>
+    <button type="button" role="radio" data-mode="ENTRY" aria-checked="true">Entrance</button>
     <button type="button" role="radio" data-mode="EXIT" aria-checked="false">Exit</button>
-    <button type="button" role="radio" data-mode="SWEEP" aria-checked="false">Seat check</button>
   </div>
 
   <section class="camera" aria-label="Camera">
+    <p class="mode-strip is-in" id="mode-strip">Entrance</p>
     <video id="video" playsinline muted></video>
     <div class="frame" aria-hidden="true"></div>
     <button type="button" class="torch" id="torch" hidden>Torch</button>
@@ -45,15 +55,19 @@
 
   <section class="result idle" id="result" aria-live="assertive" aria-atomic="true">
     <p class="r-name" id="r-name">Point the camera at a pass</p>
-    <p class="r-line" id="r-line">Entry mode: a scan checks the person in.</p>
+    <p class="r-line" id="r-line">Entrance: a scan checks the person in.</p>
     <div class="r-actions" id="r-actions"></div>
   </section>
 
   <div class="actions">
-    <button type="button" id="next-exit" aria-pressed="false">Next scan: Exit</button>
     <button type="button" id="open-find">Find a name</button>
     <button type="button" id="open-walkin">Add walk-in</button>
   </div>
+
+  <section class="recent-wrap" id="recent-wrap" aria-label="Last scans" hidden>
+    <h2>Last scans</h2>
+    <ol class="recent" id="recent"></ol>
+  </section>
 </main>
 
 <footer class="status">
@@ -67,6 +81,15 @@
     <label for="find-q">Name</label>
     <input id="find-q" type="search" autocomplete="off" placeholder="For example Sara">
     <ul id="find-list" class="find-list"></ul>
+    <button type="submit" class="secondary">Close</button>
+  </form>
+</dialog>
+
+<dialog id="inside" aria-labelledby="inside-title">
+  <form method="dialog" class="sheet">
+    <h2 id="inside-title">Still inside</h2>
+    <p class="hint" id="inside-note"></p>
+    <ul id="inside-list" class="find-list"></ul>
     <button type="submit" class="secondary">Close</button>
   </form>
 </dialog>
@@ -90,9 +113,9 @@
 <dialog id="name-phone" aria-labelledby="phone-title">
   <form id="phone-form" class="sheet">
     <h2 id="phone-title">Name this phone</h2>
-    <p class="hint">The name shows in the scan log, so the organiser can tell the doors apart.</p>
+    <p class="hint">The name shows in the scan log and in the organiser's list of phones, so use the workshop and the door.</p>
     <label for="phone-name">Phone name</label>
-    <input id="phone-name" required maxlength="30" value="Door 1">
+    <input id="phone-name" required maxlength="30" placeholder="W07 entrance">
     <button type="submit">Save</button>
   </form>
 </dialog>
@@ -117,12 +140,24 @@
   </div>
 </dialog>
 
+<dialog id="ws-switch" aria-labelledby="ws-switch-title">
+  <div class="sheet">
+    <h2 id="ws-switch-title">A link for another workshop</h2>
+    <p class="hint" id="ws-switch-text"></p>
+    <div class="row">
+      <button type="button" id="ws-switch-yes">Switch</button>
+      <button type="button" class="secondary" id="ws-switch-no">Keep this workshop</button>
+    </div>
+  </div>
+</dialog>
+
 <div class="blocker" id="blocker" hidden>
   <h2 id="blocker-title"></h2>
   <p id="blocker-text"></p>
 </div>
 
 <script src="vendor/barcode-detector-3.2.3.js"></script>
-<script src="app.js"></script>
+<script src="queue.js?v=8"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
