@@ -36,8 +36,9 @@
   if (location.hash) history.replaceState(null, '', location.pathname + location.search);
   if (L.given) {
     if (L.bad) S.badLink = true;
-    else if (!S.api || newApi === S.api) { if (newKey !== S.key || L.api2 !== S.api2 || L.key2 !== S.key2) adopt(newApi, newKey, L.api2, L.key2); }
-    else S.switchTo = { api: newApi, key: newKey, api2: L.api2, key2: L.key2 };   // another Sheet: confirm first (see start)
+    else if (!S.api) adopt(newApi, newKey, L.api2, L.key2);           // a new phone
+    else if (newApi === S.api && L.api2 === S.api2) { if (newKey !== S.key || L.key2 !== S.key2) adopt(newApi, newKey, L.api2, L.key2); }   // new keys only
+    else S.switchTo = { api: newApi, key: newKey, api2: L.api2, key2: L.key2 };   // another Sheet, or a second Sheet added, changed or removed: confirm first
   }
   if (!S.badLink && newWs && (!S.switchTo || newApi === S.api)) {
     if (!S.workshop || S.workshop === newWs) setWorkshop(newWs); else S.askWorkshop = newWs;
