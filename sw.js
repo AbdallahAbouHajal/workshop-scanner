@@ -2,8 +2,8 @@
 // The cache name carries the scanner build (BUILD in app.js). Files are fetched with cache: 'no-cache', because GitHub Pages
 // sends max-age=600 and a phone could otherwise run an old app.js for 10 minutes after a deploy; if the network gives no answer
 // within 3 seconds (a hall with jammed Wi-Fi), the saved copy is used.
-const CACHE = 'scanner-v8';
-const FILES = ['./', 'index.html', 'styles.css?v=8', 'queue.js?v=8', 'app.js?v=8', 'manifest.webmanifest', 'vendor/barcode-detector-3.2.3.js',
+const CACHE = 'scanner-v9';
+const FILES = ['./', 'index.html', 'styles.css?v=9', 'queue.js?v=9', 'route.js?v=9', 'app.js?v=9', 'manifest.webmanifest', 'vendor/barcode-detector-3.2.3.js',
   'vendor/zxing_reader.wasm', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
