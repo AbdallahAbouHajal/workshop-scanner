@@ -32,11 +32,11 @@
     const g = guests && guests[hash];
     return g && g.b === 2 ? { to: 2, auto: false } : g ? { to: 1, auto: false } : { to: 1, auto: true };
   }
-  // pass this answered scan on to the graduates' Sheet? Only a scan sent to the campus Sheet because neither list had it, that
-  // the campus Sheet did not know, for a workshop the graduates' Sheet has
+  // pass this answered scan on to the graduates' Sheet? Every scan sent to the campus Sheet because neither list had it, that the
+  // campus Sheet did not know. The graduates' Sheet answers for itself (also when it lacks the workshop), so the phone does not
+  // need its list first: a new phone, or one whose last call to that Sheet failed, still reaches it (devil review, 5 Nov 2026).
   function forward(item, result, two) {
-    return !!(two && two.has2 && item && item.action !== 'walkin' && item.auto && item.to !== 2 && result && result.effect === 'UNKNOWN' &&
-      (two.ws2 || []).indexOf(item.workshop) >= 0);
+    return !!(two && two.has2 && item && item.action !== 'walkin' && item.auto && item.to !== 2 && result && result.effect === 'UNKNOWN');
   }
   function passOn(item, newId) { return Object.assign({}, item, { scanId: newId(), to: 2, auto: false }); }
   function sumCounts(a, b) {

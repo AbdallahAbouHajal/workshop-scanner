@@ -142,6 +142,8 @@
       return { ok: true, counts: res.counts, results: [Object.assign({ scanId: x.scanId }, res)] };
     }
     const res = await post({ action: 'scans', workshop: S.workshop, items: batch.map(strip) }, n);
+    // the graduates' Sheet does not have this workshop: none of these codes is one of its passes
+    if (n === 2 && res && res.ok === false && res.error === 'workshop') return { ok: true, results: batch.map(x => ({ scanId: x.scanId, effect: 'UNKNOWN' })) };
     if (res && res.ok === false && res.error === 'unknown action') {          // the server was rolled back: the old one-scan request
       const results = [];
       for (const x of batch) {
@@ -197,7 +199,6 @@
       const t = item.action === 'walkin' ? { to: 1, auto: false } : ScanRoute.target(item.hash, S.guests);
       item.to = t.to; item.auto = t.auto;
     }
-    if (item.to === 1 && !S.has1 && Q2 && item.action !== 'walkin') { item.to = 2; item.auto = false; }   // only the graduates' Sheet has this workshop
     if (item.to === 2 && !Q2) item.to = 1;
     (item.to === 2 ? Q2 : Q1).add(item);
     const entry = { id: item.scanId, at: item.at, name: name || 'Pass', mode: item.mode, line: 'Saving', kind: 'pending', item: item, actions: [] };
@@ -237,7 +238,7 @@
       case 'NOT_IN': return { kind: 'warn', line: 'Exit saved. Their entrance has not reached the Sheet yet.' };
       case 'OTHER_WORKSHOP': return { kind: 'warn', line: 'This pass is for ' + (r.other ? (r.other.venue ? r.other.venue + ': ' : '') + r.other.title + ', ' + r.other.day + ' at ' + r.other.start : 'another workshop') + '. Not counted here.' };
       case 'CLOSED': return { kind: 'error', line: 'Not counted: this workshop closed before this scan.' };
-      case 'UNKNOWN': return { kind: 'error', line: 'Pass not found. This code is not registered for any workshop.' };
+      case 'UNKNOWN': return { kind: 'error', line: Q2 ? 'Pass not found on this campus. It may be a pass for the other campus.' : 'Pass not found. This code is not registered for any workshop.' };
       case 'REFUSED': return { kind: 'error', line: 'Walk-in not added: ' + (r.why || 'the name or email was refused') + '.' };
       case 'ERROR': return { kind: 'error', line: 'Not saved after 5 tries. Scan again, or use Find a name.' };
       case 'REPEAT': return { kind: 'pending', line: 'Read twice, counted once.' };
@@ -258,9 +259,13 @@
     });
     $('recent-wrap').hidden = !S.recent.length;
   }
-  function problem(res, n) {
-    if (n === 2 && (res.error === 'workshop' || res.error === 'closed')) return;   // the graduates' Sheet lacks or has closed this workshop: the campus Sheet decides
-    if (n === 2 && res.error === 'key') return block('The graduates\u2019 Sheet in this scanner link no longer works', 'Scans waiting on this phone are kept. Ask the organiser for the new link: in the Sheet, Workshop > Open scanner.');
+  // n: which Sheet answered (2: the graduates' Sheet); bg: a background call (hello, heartbeat), not a scan
+  function problem(res, n, bg) {
+    if (n === 2) {                     // the graduates' Sheet never stops the door: the campus Sheet keeps working
+      if (res.error === 'key') { S.warn2 = 'The graduates\u2019 list cannot be reached with this link. Their scans are kept on this phone. Ask the organiser for the new link.'; banner(); }
+      return;
+    }
+    if (bg && ['key', 'closed', 'workshop'].indexOf(res.error) < 0) return;   // a background check failed: nothing to rescan
     if (res.error === 'key') return block('This scanner link no longer works', 'Scans waiting on this phone are kept. Ask the organiser for the new link: in the Sheet, Workshop > Open scanner.');
     if (res.error === 'closed') {
       S.guests = {}; store.drop('guests');
@@ -276,24 +281,25 @@
   async function hello() {
     try {
       const [r1, r2] = await Promise.all([post({ action: 'hello', workshop: S.workshop }, 1), Q2 ? post({ action: 'hello', workshop: S.workshop }, 2).catch(() => null) : null]);
-      if (!r1.ok) return problem(r1, 1);
+      if (!r1.ok) return problem(r1, 1, true);
       const ok2 = !!(r2 && r2.ok);
-      if (r2 && r2.ok === false) problem(r2, 2);
-      if (ok2) { S.ws2 = (r2.workshops || []).map(w => w.key); store.set('ws2', S.ws2); }
-      S.workshops = ScanRoute.mergeWorkshops(r1.workshops, ok2 ? r2.workshops : []);
+      if (r2 && r2.ok === false) problem(r2, 2, true);
+      if (ok2) { S.ws2 = (r2.workshops || []).map(w => w.key); store.set('ws2', S.ws2); if (S.warn2) { S.warn2 = ''; banner(); } }
+      S.workshops = r1.workshops || [];                                // the campus Sheet's workshops are the ones this door runs
       store.set('workshops', S.workshops);
-      const has1 = !!r1.workshop, has2 = ok2 && !!r2.workshop, res = has1 ? r1 : r2;
-      S.has1 = has1 || !has2;
-      if (!has1 && !has2) return pick(S.workshop ? 'Workshop ' + S.workshop + ' is not in the list any more. Choose another one.' : '');
-      if (res.closed) return problem({ error: 'closed' });
-      S.guests = ScanRoute.mergeGuests(has1 ? r1.guests : [], has2 ? r2.guests : []);
+      if (!r1.workshop) return pick(S.workshop ? 'Workshop ' + S.workshop + ' is not in the list any more. Choose another one.' : '');
+      const has2 = ok2 && !!r2.workshop, res = r1;
+      if (r1.closed && !(has2 && !r2.closed)) return problem({ error: 'closed' });   // closed only when no Sheet still has it open
+      // the graduates' Sheet did not answer: keep its guests from the last answer, so their names and Find a name still work
+      const keep2 = Q2 && !ok2 ? Object.keys(S.guests).filter(h => S.guests[h] && S.guests[h].b === 2).map(h => [h, S.guests[h].name, S.guests[h].inside ? 1 : 0, S.guests[h].status]) : [];
+      S.guests = ScanRoute.mergeGuests(r1.guests, has2 ? r2.guests : keep2);
       S.title = res.title;
       S.when = res.day + ', ' + res.start + ' to ' + res.end + (res.venue ? ', ' + res.venue : '') + (res.rehearsal ? ' (rehearsal on)' : '');
       S.info = { at: res.at, endAt: res.endAt, minMinutes: res.minMinutes };
       store.set('guests', S.guests); store.set('title', S.title); store.set('when', S.when); store.set('info', S.info);
       showTitle();
-      S.counts1 = null; S.counts2 = null;
-      if (has1) counts(r1.counts, 1);
+      S.counts1 = null; if (has2 || !Q2) S.counts2 = null;
+      counts(r1.counts, 1);
       if (has2) counts(r2.counts, 2);
     } catch (e) { /* offline: the list saved on this phone is used */ }
   }
@@ -305,8 +311,8 @@
   // every half minute the phone reports how many scans it still holds, so the organiser can see a phone that is behind
   function heartbeat() {
     if (!S.workshop) return;
-    post({ action: 'stats', pending: Q1.size(), workshop: S.workshop }, 1).then(r => r && r.ok ? counts(r.counts, 1) : r && problem(r, 1)).catch(() => {});
-    if (Q2) post({ action: 'stats', pending: Q2.size(), workshop: S.workshop }, 2).then(r => r && r.ok ? counts(r.counts, 2) : r && problem(r, 2)).catch(() => {});
+    post({ action: 'stats', pending: Q1.size(), workshop: S.workshop }, 1).then(r => r && r.ok ? counts(r.counts, 1) : r && problem(r, 1, true)).catch(() => {});
+    if (Q2) post({ action: 'stats', pending: Q2.size(), workshop: S.workshop }, 2).then(r => r && r.ok ? counts(r.counts, 2) : r && problem(r, 2, true)).catch(() => {});
   }
   // the guest list every 2 minutes, and every 30 seconds in the last 15 minutes of the session (who is still inside)
   let lastHello = 0;
@@ -321,7 +327,8 @@
     if (!box) return;
     const w = S.workshops.find(x => x.key === S.workshop), now = Date.now(), today = new Date().toDateString();
     let text = '', acts = [];
-    if (w && !w.test && new Date(w.at).toDateString() !== today) {        // a trial (ticked Test) runs on any day
+    if (S.warn2) text = S.warn2;
+    else if (w && !w.test && new Date(w.at).toDateString() !== today) {        // a trial (ticked Test) runs on any day
       text = 'This phone is set to ' + w.title + ', ' + w.day + '. Today is ' + new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }) + '.';
       acts = [['Change workshop', () => pick('')]];
     } else if (w && w.endAt < now) {
@@ -526,8 +533,12 @@
   function start() {
     if (S.badLink) return block('This is not a valid scanner link', 'Open the scanner from the QR code the organiser shows in the Sheet, under Workshop > Open scanner.');
     if (S.switchTo) {
-      $('switch-text').textContent = 'This phone is set up for another scanner link. Use the new link? ' +
-        (qsize() ? 'Scans still waiting for the current link stay on this phone and are not sent to the new one.' : '');
+      const to = S.switchTo, same = to.api === S.api;
+      $('switch-text').textContent = (same && to.api2 && !S.api2 ? 'This link adds the graduates\u2019 Sheet to this phone. Use it?'
+        : same && !to.api2 && S.api2 ? 'This link removes the graduates\u2019 Sheet from this phone: graduates\u2019 passes would show "Pass not found". Keep the current link unless the organiser asked for this one.'
+        : same ? 'This link changes the graduates\u2019 Sheet on this phone. Use it?'
+        : 'This phone is set up for another scanner link. Use the new link?') +
+        (qsize() && !same ? ' Scans still waiting for the current link stay on this phone and are not sent to the new one.' : '');
       $('switch').showModal();
       $('switch-yes').onclick = () => { adopt(S.switchTo.api, S.switchTo.key, S.switchTo.api2, S.switchTo.key2); S.switchTo = null; if (WS_RE.test(newWs)) setWorkshop(newWs); $('switch').close(); location.reload(); };
       $('switch-no').onclick = () => { S.switchTo = null; $('switch').close(); start(); };
@@ -548,6 +559,7 @@
       const w = S.workshops.find(x => x.key === S.workshop);
       if (w && !w.test && new Date(w.at).toDateString() !== new Date().toDateString() && S.phone) pick('This phone was set to ' + w.title + ', ' + w.day + '. Choose today\'s workshop.');
     });
+    kickAll();                                                     // scans saved before a reload leave now, not at the next scan
     setInterval(heartbeat, 30000); setInterval(maybeHello, 15000); setInterval(banner, 60000); setInterval(() => syncLine(), 20000);
     window.addEventListener('online', () => { kickAll(); syncLine(); });
     window.addEventListener('offline', () => syncLine());
